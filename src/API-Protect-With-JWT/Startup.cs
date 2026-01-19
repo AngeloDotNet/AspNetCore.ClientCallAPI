@@ -10,96 +10,104 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 
-namespace API_Protect_With_JWT
+namespace API_Protect_With_JWT;
+
+public class Startup(IConfiguration configuration)
 {
-    public class Startup
+    public IConfiguration Configuration { get; } = configuration;
+
+    public void ConfigureServices(IServiceCollection services)
     {
-        public Startup(IConfiguration configuration)
-        {
-            Configuration = configuration;
-        }
+        services.AddControllers();
 
-        public IConfiguration Configuration { get; }
-
-        public void ConfigureServices(IServiceCollection services)
+        services.AddSwaggerGen(config =>
         {
-            services.AddControllers();
-            services.AddSwaggerGen(config =>
+            config.SwaggerDoc("v1", new OpenApiInfo { Title = "API_Protect_With_JWT", Version = "v1" });
+
+            // Use HTTP Bearer scheme (correct for JWT) and avoid duplicate header-name only definition
+            config.AddSecurityDefinition(JwtBearerDefaults.AuthenticationScheme, new OpenApiSecurityScheme
             {
-                config.SwaggerDoc("v1", new OpenApiInfo { Title = "API_Protect_With_JWT", Version = "v1" });
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "JWT",
+                In = ParameterLocation.Header,
+                Description = "Insert the Bearer token as: Bearer {token}"
+            });
 
-                config.AddSecurityDefinition(JwtBearerDefaults.AuthenticationScheme, new OpenApiSecurityScheme
+            config.AddSecurityRequirement(new OpenApiSecurityRequirement
+            {
                 {
-                    In = ParameterLocation.Header,
-                    Description = "Insert the Bearer Token",
-                    Name = "Authorization",
-                    Type = SecuritySchemeType.ApiKey
-                });
-
-                config.AddSecurityRequirement(new OpenApiSecurityRequirement
-                {
+                    new OpenApiSecurityScheme
                     {
-                        new OpenApiSecurityScheme
+                        Reference = new OpenApiReference
                         {
-                            Reference= new OpenApiReference
-                            {
-                                Type = ReferenceType.SecurityScheme,
-                                Id = JwtBearerDefaults.AuthenticationScheme
-                            }
+                            Type = ReferenceType.SecurityScheme,
+                            Id = JwtBearerDefaults.AuthenticationScheme
                         },
-                        Array.Empty<string>()
-                    }
-                });
+                        Scheme = "bearer",
+                        Name = JwtBearerDefaults.AuthenticationScheme,
+                        In = ParameterLocation.Header
+                    },
+                    Array.Empty<string>()
+                }
             });
+        });
 
-            services.Configure<JwtOptions>(Configuration.GetSection("JWT"));
+        // Bind once and reuse values to avoid repeated configuration lookups
+        services.Configure<JwtOptions>(Configuration.GetSection("JWT"));
+        var jwtOptions = Configuration.GetSection("JWT").Get<JwtOptions>() ?? throw new InvalidOperationException("JWT section is required in configuration.");
 
-            services.AddAuthentication(options =>  
-            {  
-                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;  
-                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;  
-                options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;  
-            }) 
+        // Precompute signing key and validation parameters to avoid repeated allocations and work
+        var secretBytes = Encoding.UTF8.GetBytes(jwtOptions.Secret ?? throw new InvalidOperationException("JWT:Secret is required."));
+        var signingKey = new SymmetricSecurityKey(secretBytes);
 
-            .AddJwtBearer(options =>  
-            {  
-                options.SaveToken = true;  
-                options.RequireHttpsMetadata = false;  
-                options.TokenValidationParameters = new TokenValidationParameters()  
-                {  
-                    ValidateIssuer = true,  
-                    ValidateAudience = true,  
-                    ValidAudience = Configuration.GetSection("JWT").GetValue<string>("ValidAudience").ToString(),  
-                    ValidIssuer = Configuration.GetSection("JWT").GetValue<string>("ValidIssuer").ToString(),  
-                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Configuration.GetSection("JWT").GetValue<string>("Secret").ToString()))  
-                };  
-            });
-        }
-
-        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+        var tokenValidationParameters = new TokenValidationParameters
         {
-            if (env.IsDevelopment())
-            {
-                app.UseDeveloperExceptionPage();
-                app.UseSwagger();
-                app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "API_Protect_With_AspNetCore_Identity v1"));
-            }
-            else
-            {
-                app.UseSwagger();
-                app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "API_Protect_With_AspNetCore_Identity v1"));
-            }
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateIssuerSigningKey = true,
+            ValidAudience = jwtOptions.ValidAudience,
+            ValidIssuer = jwtOptions.ValidIssuer,
+            IssuerSigningKey = signingKey,
+            // tighten skew if desired; default is 5 minutes
+            ClockSkew = TimeSpan.Zero
+        };
 
-            app.UseHttpsRedirection();
-            app.UseRouting();
+        services.AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+        })
+        .AddJwtBearer(options =>
+        {
+            options.SaveToken = true;
+            // keep same behavior as original (disable HTTPS metadata during development/testing)
+            options.RequireHttpsMetadata = false;
+            options.TokenValidationParameters = tokenValidationParameters;
+        });
+    }
 
-            app.UseAuthentication();  
-            app.UseAuthorization(); 
-
-            app.UseEndpoints(endpoints =>
-            {
-                endpoints.MapControllers();
-            });
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    {
+        if (env.IsDevelopment())
+        {
+            app.UseDeveloperExceptionPage();
         }
+
+        // Swagger registration was identical for both branches; register once
+        app.UseSwagger();
+        app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "API_Protect_With_AspNetCore_Identity v1"));
+
+        app.UseHttpsRedirection();
+        app.UseRouting();
+
+        app.UseAuthentication();
+        app.UseAuthorization();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
     }
 }
