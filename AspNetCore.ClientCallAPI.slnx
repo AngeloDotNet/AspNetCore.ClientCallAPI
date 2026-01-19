@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/API-Protect-With-JWT/API-Protect-With-JWT.csproj" />
+  <Project Path="src/AspNetCore-Client-CallAPI/AspNetCore-Client-CallAPI.csproj" />
+</Solution>
